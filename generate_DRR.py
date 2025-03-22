@@ -9,6 +9,9 @@ import cv2 as cv
 import itk
 import math
 import nibabel as nib
+from utils import config
+
+
 def NiiDataRead(path, as_type=np.float32):
     img = sitk.ReadImage(path)
     spacing = img.GetSpacing()
@@ -16,6 +19,7 @@ def NiiDataRead(path, as_type=np.float32):
     direction = img.GetDirection()
     img_it = sitk.GetArrayFromImage(img).astype(as_type)
     return img_it, spacing, origin, direction
+
 
 def NiiDataWrite(path, prediction_final, spacing, origin, direction):
     # prediction_final = prediction_final.astype(as_type)
@@ -25,22 +29,23 @@ def NiiDataWrite(path, prediction_final, spacing, origin, direction):
     img.SetDirection(direction)
     sitk.WriteImage(img, path)
 
+
 def DigitallyReconstructedRadiograph(
-        input_path,
-        output_path,
-        ray_source_distance=20000,
-        camera_tx= 0.,
-        camera_ty= 0.,
-        camera_tz= 0.,
-        rotation_x=90.,
-        rotation_y=0.,
-        rotation_z= 0.,
-        projection_normal_p_x=0.,
-        projection_normal_p_y=0.,
-        rotation_center_rt_volume_center_x=0.,
-        rotation_center_rt_volume_center_y=0.,
-        rotation_center_rt_volume_center_z=0.,
-        threshold=-1024.,
+    input_path,
+    output_path,
+    ray_source_distance=20000,
+    camera_tx=0.0,
+    camera_ty=0.0,
+    camera_tz=0.0,
+    rotation_x=90.0,
+    rotation_y=0.0,
+    rotation_z=0.0,
+    projection_normal_p_x=0.0,
+    projection_normal_p_y=0.0,
+    rotation_center_rt_volume_center_x=0.0,
+    rotation_center_rt_volume_center_y=0.0,
+    rotation_center_rt_volume_center_z=0.0,
+    threshold=-1024.0,
 ):
     """
     Parameters description:
@@ -54,11 +59,15 @@ def DigitallyReconstructedRadiograph(
     threshold = 10                                          # <-threshold float>      Threshold [default: 0]
     """
     input_name = input_path
-    volume_lung = itk.imread(input_name, itk.ctype('float'))
+    volume_lung = itk.imread(input_name, itk.ctype("float"))
 
-    output_image_pixel_spacing = [1., 1., 1.]
+    output_image_pixel_spacing = [1.0, 1.0, 1.0]
     output_image_size = list(volume_lung.GetBufferedRegion().GetSize())
-    output_image_size = [output_image_size[0], output_image_size[2], output_image_size[1]]
+    output_image_size = [
+        output_image_size[0],
+        output_image_size[2],
+        output_image_size[1],
+    ]
     output_image_size[-1] = 1
 
     InputImageType = type(volume_lung)
@@ -76,43 +85,59 @@ def DigitallyReconstructedRadiograph(
     InterpolatorType = itk.RayCastInterpolateImageFunction[InputImageType, itk.D]
     interpolator = InterpolatorType.New()
 
-    dgree_to_radius_coef = 1. / 180. * math.pi
+    dgree_to_radius_coef = 1.0 / 180.0 * math.pi
     camera_translation_parameter = [camera_tx, camera_ty, camera_tz]
-    rotation_around_xyz = [rotation_x * dgree_to_radius_coef, rotation_y * dgree_to_radius_coef,
-                           rotation_z * dgree_to_radius_coef]
+    rotation_around_xyz = [
+        rotation_x * dgree_to_radius_coef,
+        rotation_y * dgree_to_radius_coef,
+        rotation_z * dgree_to_radius_coef,
+    ]
     projection_normal_position = [projection_normal_p_x, projection_normal_p_y]
     rotation_center_relative_to_volume_center = [
         rotation_center_rt_volume_center_x,
         rotation_center_rt_volume_center_y,
-        rotation_center_rt_volume_center_z
+        rotation_center_rt_volume_center_z,
     ]
 
     imageOrigin = volume_lung.GetOrigin()
     imageSpacing = volume_lung.GetSpacing()
     imageRegion = volume_lung.GetBufferedRegion()
     imageSize = imageRegion.GetSize()
-    imageCenter = [imageOrigin[i] + imageSpacing[i] * imageSize[i] / 2.0 for i in range(3)]
+    imageCenter = [
+        imageOrigin[i] + imageSpacing[i] * imageSize[i] / 2.0 for i in range(3)
+    ]
 
     transform.SetTranslation(camera_translation_parameter)
-    transform.SetRotation(rotation_around_xyz[0], rotation_around_xyz[1], rotation_around_xyz[2])
+    transform.SetRotation(
+        rotation_around_xyz[0], rotation_around_xyz[1], rotation_around_xyz[2]
+    )
 
-    center = [c + imageCenter[i] for i, c in enumerate(rotation_center_relative_to_volume_center)]
+    center = [
+        c + imageCenter[i]
+        for i, c in enumerate(rotation_center_relative_to_volume_center)
+    ]
     transform.SetCenter(center)
 
     interpolator.SetTransform(transform)
     interpolator.SetThreshold(threshold)
-    focalPoint = [imageCenter[0], imageCenter[1], imageCenter[2] - ray_source_distance / 2.0]
+    focalPoint = [
+        imageCenter[0],
+        imageCenter[1],
+        imageCenter[2] - ray_source_distance / 2.0,
+    ]
     interpolator.SetFocalPoint(focalPoint)
 
     filter.SetInterpolator(interpolator)
     filter.SetTransform(transform)
 
     origin = [
-        imageCenter[0] + projection_normal_position[0] - output_image_pixel_spacing[0] * (
-                    output_image_size[0] - 1) / 2.,
-        imageCenter[1] + projection_normal_position[1] - output_image_pixel_spacing[1] * (
-                    output_image_size[1] - 1) / 2.,
-        imageCenter[2] + imageSpacing[2] * imageSize[2]
+        imageCenter[0]
+        + projection_normal_position[0]
+        - output_image_pixel_spacing[0] * (output_image_size[0] - 1) / 2.0,
+        imageCenter[1]
+        + projection_normal_position[1]
+        - output_image_pixel_spacing[1] * (output_image_size[1] - 1) / 2.0,
+        imageCenter[2] + imageSpacing[2] * imageSize[2],
     ]
 
     filter.SetOutputOrigin(origin)
@@ -121,9 +146,16 @@ def DigitallyReconstructedRadiograph(
     image = np.asarray(filter.GetOutput())[0]
     image = (image - np.min(image)) / (np.max(image) - np.min(image))
 
-    np.save(output_path, (image - 0.5)*2)
+    np.save(output_path, (image - 0.5) * 2)
+
 
 def pre_process_image_DeepLesion(path, out_path):
+    """估计读取预处理过后的图像目录中的图像, 并将生成的DRR 保存至新的目录
+
+    Args:
+        path (_type_): _description_
+        out_path (_type_): _description_
+    """
     if os.path.exists(out_path):
         shutil.rmtree(out_path)
 
@@ -140,13 +172,18 @@ def pre_process_image_DeepLesion(path, out_path):
         DigitallyReconstructedRadiograph(
             input_path=mid_1_path,
             output_path=os.path.join(out_path, file_name.replace("nii.gz", "npy")),
-            rotation_x=90.,
-            rotation_y=0.,
-            rotation_z=90.)
+            rotation_x=90.0,
+            rotation_y=0.0,
+            rotation_z=90.0,
+        )
 
 
+if __name__ == "__main__":
+    # pre_process_image_DeepLesion(
+    #     path="/data/userdisk0/ywye/Dataset/DeepLesion/Images_nifti_spacing/",
+    #     out_path="/data/userdisk0/ywye/Dataset/DeepLesion/DRR/",
+    # )
 
-if __name__ == '__main__':
-    pre_process_image_DeepLesion(path="/data/userdisk0/ywye/Dataset/DeepLesion/Images_nifti_spacing/", out_path="/data/userdisk0/ywye/Dataset/DeepLesion/DRR/")
-
-
+    pre_process_image_DeepLesion(
+        path=config.cads_cache_dir, out_path=config.cads_drr_dir
+    )
