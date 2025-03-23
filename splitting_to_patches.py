@@ -13,7 +13,7 @@ from pathlib import Path
 # ori_path = '../../Images_nifti_spacing'
 ori_path = config.cads_cache_dir
 # save_path = '../../DL_patches_v2'
-save_path = Path(config.cads_cache_dir).with_name("DL_patched_v2")
+save_path = Path(config.cads_cache_dir).with_name("DL_patches_v2")
 # file_path = "../../SSL_data_deeplesion.txt"
 file_path = Path(config.cads_cache_dir).with_name("SSL_data_deeplesion.txt")
 
@@ -68,24 +68,25 @@ def processing(root, i_files):
             sitk.WriteImage(saveITK, path_dep)
 
 
-count = -1
+if __name__ == "__main__":
+    count = -1
 
-pool = Pool(processes=16, maxtasksperchild=1000)
-for root, dirs, files in os.walk(ori_path):
-    for i_files in tqdm(sorted(files)):
-        if i_files[0] == ".":
-            continue
+    pool = Pool(processes=16, maxtasksperchild=1000)
+    for root, dirs, files in os.walk(ori_path):
+        for i_files in tqdm(sorted(files)):
+            if i_files[0] == ".":
+                continue
 
-        # read img
-        print("Processing %s" % (i_files))
+            # read img
+            print("Processing %s" % (i_files))
 
-        pool.apply_async(func=processing, args=(root, i_files))
+            pool.apply_async(func=processing, args=(root, i_files))
 
-pool.close()
-pool.join()
+    pool.close()
+    pool.join()
 
-file = open(file_path, "w")
-for name in sorted(os.listdir(save_path)):
-    if name.endswith("nii.gz"):
-        file.write("DL_patches_v2/" + name + "\n")
-file.close()
+    file = open(file_path, "w")
+    for name in sorted(os.listdir(save_path)):
+        if name.endswith("nii.gz") or name.endswith("nii"):
+            file.write("DL_patches_v2/" + name + "\n")
+    file.close()

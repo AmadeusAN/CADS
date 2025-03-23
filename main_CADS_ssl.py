@@ -26,12 +26,13 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torchvision import models as torchvision_models
-import utils
-import models.res3d as res3d
-from models.res3d import DINOHead
+import cads_utils
+import cads_models.res3d as res3d
+from cads_models.res3d import DINOHead
 from data_loader_ssl import Dataset3D
-from models.PVTv2 import pvt_v2_b1, pvt_v2_b1_tea
+from cads_models.PVTv2 import pvt_v2_b1, pvt_v2_b1_tea
 import shutil
+from utils import config
 
 torchvision_archs = sorted(
     name
@@ -47,18 +48,21 @@ def get_args_parser():
 
     # Model parameters
     parser.add_argument(
-        "--arch", default="res3d18", type=str, help="""Name of architecture to train."""
+        "--arch",
+        default="pvtv2_b1",
+        type=str,
+        help="""Name of architecture to train.""",
     )
     parser.add_argument(
         "--out_dim",
-        default=65536,
+        default=60000,
         type=int,
         help="""Dimensionality of the DeSD head output.""",
     )
     parser.add_argument(
         "--norm_last_layer",
         default=True,
-        type=utils.bool_flag,
+        type=cads_utils.bool_flag,
         help="""Whether or not to weight normalize the last layer of the DeSD head.
         Not normalizing leads to better performance but can make the training unstable.""",
     )
@@ -73,7 +77,7 @@ def get_args_parser():
     parser.add_argument(
         "--use_bn_in_head",
         default=False,
-        type=utils.bool_flag,
+        type=cads_utils.bool_flag,
         help="Whether to use batch normalizations in projection head (Default: False)",
     )
 
@@ -87,7 +91,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--teacher_temp",
-        default=0.04,
+        default=0.07,
         type=float,
         help="""Final value (after linear warmup)
         of the teacher temperature. For most experiments, anything above 0.07 is unstable. We recommend
@@ -95,7 +99,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--warmup_teacher_temp_epochs",
-        default=0,
+        default=50,
         type=int,
         help="Number of warmup epochs for the teacher temperature.",
     )
@@ -103,8 +107,8 @@ def get_args_parser():
     # Training/Optimization parameters
     parser.add_argument(
         "--use_fp16",
-        type=utils.bool_flag,
-        default=True,
+        type=cads_utils.bool_flag,
+        default=False,
         help="""Whether or not
         to use half precision for training. Improves training time and memory requirements,
         but can provoke instability and slight decay of performance. We recommend disabling
@@ -128,23 +132,23 @@ def get_args_parser():
     parser.add_argument(
         "--clip_grad",
         type=float,
-        default=3.0,
+        default=0.3,
         help="""Maximal parameter
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""",
     )
     parser.add_argument(
         "--batch_size_per_gpu",
-        default=32,
+        default=64,
         type=int,
         help="Per-GPU batch-size : number of distinct images loaded on one GPU.",
     )
     parser.add_argument(
-        "--epochs", default=100, type=int, help="Number of epochs of training."
+        "--epochs", default=150, type=int, help="Number of epochs of training."
     )
     parser.add_argument(
         "--freeze_last_layer",
-        default=1,
+        default=3,
         type=int,
         help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
@@ -152,7 +156,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--lr",
-        default=0.0005,
+        default=0.00075,
         type=float,
         help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
@@ -167,7 +171,7 @@ def get_args_parser():
     parser.add_argument(
         "--min_lr",
         type=float,
-        default=1e-6,
+        default=2e-06,
         help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""",
     )
@@ -208,14 +212,14 @@ def get_args_parser():
     # Misc
     parser.add_argument(
         "--data_path",
-        default="/media/userdisk2/jpzhang/data_SSL/patches_v2/",
+        default=config.dataset_path + "/",
         type=str,
         help="Please specify path to the DeepLesion training data.",
     )
     parser.add_argument("--list_path", default="SSL_data_deeplesion.txt", type=str)
     parser.add_argument(
         "--output_dir",
-        default="snapshots/DeSD_resnet50_300",
+        default=Path(config.tensorboard_dir) / "pretrain" / "pretrain_CADS",
         type=str,
         help="Path to save logs and checkpoints.",
     )
@@ -246,9 +250,9 @@ def get_args_parser():
 
 
 def train_CADS(args):
-    utils.init_distributed_mode(args)
-    utils.fix_random_seeds(args.seed)
-    print("git:\n  {}\n".format(utils.get_sha()))
+    cads_utils.init_distributed_mode(args)
+    cads_utils.fix_random_seeds(args.seed)
+    print("git:\n  {}\n".format(cads_utils.get_sha()))
     print(
         "\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items()))
     )
@@ -257,21 +261,23 @@ def train_CADS(args):
     # copy the key files
     # 先将所有的关键文件全部复制过去。
     os.makedirs(os.path.join(args.output_dir, "code"), exist_ok=True)
-    shutil.copyfile(
-        "main_CADS_ssl.py", os.path.join(args.output_dir, "code", "main_CADS_ssl.py")
-    )
-    shutil.copyfile("utils.py", os.path.join(args.output_dir, "code", "utils.py"))
-    shutil.copyfile(
-        "data_loader_ssl.py",
-        os.path.join(args.output_dir, "code", "data_loader_ssl.py"),
-    )
-    shutil.copyfile(
-        "models/res3d.py", os.path.join(args.output_dir, "code", "res3d.py")
-    )
-    shutil.copyfile(
-        "models/PVTv2.py", os.path.join(args.output_dir, "code", "PVTv2.py")
-    )
-    shutil.copyfile("run_ssl.sh", os.path.join(args.output_dir, "code", "run_ssl.sh"))
+    # shutil.copyfile(
+    #     "./main_CADS_ssl.py", os.path.join(args.output_dir, "code", "main_CADS_ssl.py")
+    # )
+    # shutil.copyfile(
+    #     "./cads_utils.py", os.path.join(args.output_dir, "code", "cads_utils.py")
+    # )
+    # shutil.copyfile(
+    #     "./data_loader_ssl.py",
+    #     os.path.join(args.output_dir, "code", "data_loader_ssl.py"),
+    # )
+    # shutil.copyfile(
+    #     "./cads_models/res3d.py", os.path.join(args.output_dir, "code", "res3d.py")
+    # )
+    # shutil.copyfile(
+    #     "./cads_models/PVTv2.py", os.path.join(args.output_dir, "code", "PVTv2.py")
+    # )
+    # shutil.copyfile("./run_ssl.sh", os.path.join(args.output_dir, "code", "run_ssl.sh"))
     print("copy files finish!")
 
     # ============ preparing data ... ============
@@ -308,7 +314,7 @@ def train_CADS(args):
         print(f"Unknow architecture: {args.arch}")
 
     # 256, 512, 1024, and 2048 are the output dimensions of sub-encoders
-    student = utils.MultiCropWrapper_v5(
+    student = cads_utils.MultiCropWrapper_v5(
         student,
         [
             DINOHead(64, 60000, args.use_bn_in_head),
@@ -317,7 +323,7 @@ def train_CADS(args):
             DINOHead(512, 60000, args.use_bn_in_head),
         ],
     )
-    teacher = utils.MultiCropWrapper_v5_tea(
+    teacher = cads_utils.MultiCropWrapper_v5_tea(
         teacher,
         [
             DINOHead(64, 60000, args.use_bn_in_head),
@@ -331,7 +337,7 @@ def train_CADS(args):
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
-    if utils.has_batchnorms(student):
+    if cads_utils.has_batchnorms(student):
         student = nn.SyncBatchNorm.convert_sync_batchnorm(student)
         teacher = nn.SyncBatchNorm.convert_sync_batchnorm(teacher)
 
@@ -365,7 +371,7 @@ def train_CADS(args):
     ).cuda()
 
     # ============ preparing optimizer ... ============
-    params_groups = utils.get_params_groups(student)
+    params_groups = cads_utils.get_params_groups(student)
     if args.optimizer == "adamw":
         optimizer = torch.optim.AdamW(params_groups)  # to use with ViTs
     elif args.optimizer == "sgd":
@@ -373,37 +379,39 @@ def train_CADS(args):
             params_groups, lr=0, momentum=0.9
         )  # lr is set by scheduler
     elif args.optimizer == "lars":
-        optimizer = utils.LARS(params_groups)  # to use with convnet and large batches
+        optimizer = cads_utils.LARS(
+            params_groups
+        )  # to use with convnet and large batches
     # for mixed precision training
     fp16_scaler = None
     if args.use_fp16:
         fp16_scaler = torch.cuda.amp.GradScaler()
 
     # ============ init schedulers ... ============
-    lr_schedule = utils.cosine_scheduler(
+    lr_schedule = cads_utils.cosine_scheduler(
         args.lr
-        * (args.batch_size_per_gpu * utils.get_world_size())
+        * (args.batch_size_per_gpu * cads_utils.get_world_size())
         / 256.0,  # linear scaling rule
         args.min_lr,
         args.epochs,
         len(data_loader),
         warmup_epochs=args.warmup_epochs,
     )
-    wd_schedule = utils.cosine_scheduler(
+    wd_schedule = cads_utils.cosine_scheduler(
         args.weight_decay,
         args.weight_decay_end,
         args.epochs,
         len(data_loader),
     )
     # momentum parameter is increased to 1. during training with a cosine schedule
-    momentum_schedule = utils.cosine_scheduler(
+    momentum_schedule = cads_utils.cosine_scheduler(
         args.momentum_teacher, 1, args.epochs, len(data_loader)
     )
     print(f"Loss, optimizer and schedulers ready.")
 
     # ============ optionally resume training ... ============
     to_restore = {"epoch": 0}
-    utils.restart_from_checkpoint(
+    cads_utils.restart_from_checkpoint(
         os.path.join(args.output_dir, "checkpoint.pth"),
         run_variables=to_restore,
         student=student,
@@ -445,16 +453,18 @@ def train_CADS(args):
         }
         if fp16_scaler is not None:
             save_dict["fp16_scaler"] = fp16_scaler.state_dict()
-        utils.save_on_master(save_dict, os.path.join(args.output_dir, "checkpoint.pth"))
+        cads_utils.save_on_master(
+            save_dict, os.path.join(args.output_dir, "checkpoint.pth")
+        )
         if args.saveckp_freq and epoch % args.saveckp_freq == 0:
-            utils.save_on_master(
+            cads_utils.save_on_master(
                 save_dict, os.path.join(args.output_dir, f"checkpoint{epoch:04}.pth")
             )
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
             "epoch": epoch,
         }
-        if utils.is_main_process():
+        if cads_utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
         total_time = time.time() - start_time
@@ -526,8 +536,10 @@ def train_one_epoch(
             loss.backward()
 
             if args.clip_grad:
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student, args.freeze_last_layer)
+                param_norms = cads_utils.clip_gradients(student, args.clip_grad)
+            cads_utils.cancel_gradients_last_layer(
+                epoch, student, args.freeze_last_layer
+            )
             optimizer.step()
         else:
             fp16_scaler.scale(loss).backward()
@@ -535,8 +547,10 @@ def train_one_epoch(
                 fp16_scaler.unscale_(
                     optimizer
                 )  # unscale the gradients of optimizer's assigned params in-place
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student, args.freeze_last_layer)
+                param_norms = cads_utils.clip_gradients(student, args.clip_grad)
+            cads_utils.cancel_gradients_last_layer(
+                epoch, student, args.freeze_last_layer
+            )
             fp16_scaler.step(optimizer)
             fp16_scaler.update()
 
